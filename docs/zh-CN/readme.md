@@ -457,7 +457,7 @@ $$
 
 $$
 \begin{aligned}
-\boxed{\mathcal{L}_{\text{total}}}
+\mathcal{L}_{\text{total}}}
 &= 
 \mathcal{L}_{\text{tube}}
 +
@@ -851,7 +851,7 @@ $$
 
 $$
 \begin{aligned}
-\boxed{\mathcal{L}_{\text{total}}}
+\mathcal{L}_{\text{total}}}
 &= 
 \sum_{k=0}^{H-1}
 \operatorname{softplus}
