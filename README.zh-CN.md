@@ -1,64 +1,30 @@
 # New-IL
 
-New-IL 是一个关于 **Progress-Aware Trajectory Cloud Supervision** 的 idea 存档，核心关注事件约束模仿学习中的动作监督目标。
+New-IL 是一个关于 imitation learning 监督目标的 idea 存档，核心想法叫 **Progress-Aware Trajectory Cloud Supervision**。
 
-> 这不是严谨的学术发表，而是一个用于保存、讨论、启发和寻找潜在合作者的探索性存档。
+这不是正式的学术发表，而是一个公开保存想法的地方，用来分享方向、让感兴趣的人快速理解，也许找到愿意一起实现的人。
 
-## 核心直觉
+## 用大白话说这个想法
 
-很多 imitation learning 方法会把 action chunk 里的每一个未来动作，都监督到 demonstration 中某个固定时间点上。但机器人操作里，这样太僵硬。
+很多机器人模仿学习方法，会要求模型在未来某个固定时间点，精确模仿 demonstration 里的对应动作。这个监督方式有时候太死板了。
 
-连续运动阶段应该允许弹性：
+对于连续运动来说，稍微快一点、慢一点、早一点、晚一点，或者路径略微不同，可能都没问题。只要机器人仍然在当前任务阶段合理的运动范围内，就不应该被重罚。
 
-> 可以稍微快一点、慢一点、提前一点、滞后一点，或者沿着略有差异的路径走，只要仍然处在当前阶段合理的轨迹云管道内。
+但有些东西必须精确：夹爪闭合、夹爪打开、接触、释放、插入、从一个任务阶段切换到下一个任务阶段。
 
-但关键事件必须精确：
+所以核心想法很简单：
 
-> 夹爪闭合、夹爪打开、接触、释放、插入、阶段切换，不能被云化、平均化或模糊化。
+**连续运动可以有弹性，关键事件必须精确。**
 
-所以动作监督既不应该统一写成固定时间点回归，也不应该把所有动作维度都统一分布化。它应该尊重机器人操作中不同时间片段的异质语义。
+监督目标应该体现这种差异。它不应该把每个时间点、每个动作维度都当成同一种东西来监督。
 
-## 核心公式
+## 为什么可能有意义
 
-传统监督通常强迫：
-
-$$
-\hat{x}_{t+k} \rightarrow x^\star_{t+k}
-$$
-
-PA-TCS 则允许预测动作在一个进度区间内匹配轨迹云：
-
-$$
-d_{\mathrm{tube}}(\hat{x}_{t+k})
-=
-\min_{\rho\in I_{t,k}}
-d_{\mathcal{C}_r}(\hat{x}_{t+k},\rho)
-$$
-
-其中 $I_{t,k}$ 是允许的进度区间，$\mathcal{C}_r$ 是第 $r$ 个阶段的轨迹云。
-
-完整目标把阶段内的进度弹性监督和关键事件的精确约束结合起来：
-
-$$
-\mathcal{L}_{\mathrm{total}}
-=
-\mathcal{L}_{\mathrm{tube}}
-+
-\lambda_e\mathcal{L}_{\mathrm{event}}
-+
-\lambda_c\mathcal{L}_{\mathrm{cross}}
-+
-\lambda_m\mathcal{L}_{\mathrm{mono}}
-+
-\lambda_v\mathcal{L}_{\mathrm{speed}}
-$$
-
-## 这个想法有趣在哪里
-
-- 它把“进度误差”和“真正偏离轨迹”区分开。
-- 它保留连续动作的多解性，但不牺牲关键事件精度。
-- 它给 action chunk 一个阶段感知的监督结构。
-- 它自然引出比 success rate 更细的指标，例如 tube violation rate、event timing error、event pose error、wrong crossing rate 和 progress backward rate。
+- 它把无害的节奏变化和真正的轨迹错误区分开。
+- 它保留一个阶段内部多种合理运动方式。
+- 它避免关键事件被分布式动作建模模糊掉。
+- 它给 action chunk 一个更有语义的训练目标。
+- 它自然引出比 success rate 更细的指标，例如轨迹越界、事件时间误差、事件位置误差、错误跨阶段和进度倒退。
 
 ## 文档
 
