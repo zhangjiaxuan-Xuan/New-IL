@@ -1,2 +1,16 @@
 *.bak
 .DS_Store
+.venv/
+.venvs/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+data/
+datasets/
+checkpoints/
+outputs/
+runs/
+wandb/
+third_party/
+AGENTS.md

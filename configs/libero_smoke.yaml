@@ -1,0 +1,31 @@
+seed: 7
+benchmark:
+  name: libero_spatial
+  tasks: 2
+  demos_per_task: 10
+  rollout_trials_per_task: 10
+model:
+  family: smolvla_or_small_act_style
+  public_candidate: lerobot/smolvla_base
+  max_checkpoint_size_gb: 1.0
+  fallback_family: small_act_style
+  fallback_max_parameters: 250000000
+  action_horizon: 8
+method:
+  baseline: fixed_time_bc
+  candidate: pa_tcs
+  phase_grid: 32
+  tube:
+    sigma: 0.05
+    gamma: 1.0
+    temperature: 0.25
+    v_min: 0.0
+    v_max: 0.2
+    delta: 0.08
+metrics:
+  - success_rate
+  - tube_violation_rate
+  - event_timing_error
+  - event_pose_error
+  - wrong_crossing_rate
+  - progress_backward_rate

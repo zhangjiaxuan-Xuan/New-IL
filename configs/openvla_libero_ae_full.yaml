@@ -1,0 +1,42 @@
+seed: 7
+data:
+  source: openvla_modified_libero_rlds
+  root: data/openvla_modified_libero_rlds
+  revision: 6ce6aaaaabdbe590b1eef5cd29c0d33f14a08551
+  suites:
+    spatial: libero_spatial_no_noops
+    object: libero_object_no_noops
+    goal: libero_goal_no_noops
+    long: libero_10_no_noops
+model:
+  target: action_expert_full_finetune
+  policy_backbone: small_act_style_first
+  public_vla_reference: lerobot/smolvla_base
+  action_horizon: 8
+training:
+  strategy: full_action_expert
+  freeze:
+    - vision_encoder
+    - vlm_language_backbone_by_default
+  train:
+    - action_expert
+    - action_in_projection
+    - action_out_projection
+    - progress_head
+    - optional_small_adapters
+  baseline_loss: fixed_time_bc
+  candidate_loss: pa_tcs
+  batch_size: auto
+  grad_accumulation_steps: auto
+  max_steps: 80000
+  lr: 0.0005
+runtime:
+  runs_dir: runs/new_il
+  min_free_gb: 20
+  max_gpus: 1
+  memory_fraction: 0.9
+  log_terminal: true
+  write_run_config: true
+  save_checkpoints: true
+  checkpoint_every_steps: 1000
+  keep_last_checkpoints: 5
