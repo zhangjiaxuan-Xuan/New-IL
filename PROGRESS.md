@@ -121,3 +121,7 @@ Useful small-model references:
 ## Time: 5/11 Problem:
 
 现在的视频显示出这个行为模型只会原地张开夹爪不动，我怀疑是进度设计的问题，因为现在的进度设计没有强制监督的进度时间而是使用的DTW匹配，因此可能出现一直在起点进度附近卡loss bug，导致模型学会了原地张开夹爪的行为。建议在进度设计中加入强制监督的进度时间，或者调整DTW匹配的方式，以避免模型陷入这个局部最优解。 Eng: Video shows model only study dummy action in start position but no progress as usual, I suspect the progress design is the problem, because the current progress design does not have forced supervision progress time but uses DTW matching, so it may cause a loss bug that always stuck near the start progress, causing the model to learn the behavior of opening the gripper in place. It is recommended to add forced supervision progress time in the progress design, or adjust the way of DTW matching to avoid the model falling into this local optimal solution.
+
+# 解决方法设想：
+
+应该在前期给出较强的进度监督，以及减弱DIW给出的进度的参考（因为前期产生的抖动会导致DTW匹配不准确），训练到DTW的进度计算可以稳定的落在正确的进度区域内之后，再逐渐减弱强监督的进度时间，增加DTW匹配的权重，让模型逐渐适应DTW匹配的进度设计。这样可以避免模型在前期陷入局部最优解，同时也能让模型逐渐适应DTW匹配的进度设计。另外我们使用的模型是smolvla_base，其参数设置是aloha，但是我们测试的是libero，所以训练AE可以直接用smolvla_libero这个模型，在config和参数都适合。

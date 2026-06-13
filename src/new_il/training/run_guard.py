@@ -90,6 +90,10 @@ def main() -> None:
     parser.add_argument("--batch-multiple", type=int, default=4)
     parser.add_argument("--per-device-batch-size", type=int)
     parser.add_argument("--allow-oom-risk", action="store_true")
+    parser.add_argument("--min-per-device-batch", type=int, default=None,
+                        help="Auto-mode lower clamp for per-device batch size.")
+    parser.add_argument("--max-per-device-batch", type=int, default=None,
+                        help="Auto-mode upper clamp for per-device batch size.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -117,6 +121,8 @@ def main() -> None:
         batch_multiple=args.batch_multiple,
         per_device_batch_size=args.per_device_batch_size,
         allow_oom_risk=args.allow_oom_risk,
+        min_per_device_batch=args.min_per_device_batch,
+        max_per_device_batch=args.max_per_device_batch,
     )
     selected = memory_plan.selected_gpus or _select_gpus(gpus, args.min_free_gb, args.max_gpus)
     launch_command = _torchrun_command(command, len(selected)) if len(selected) > 1 else command

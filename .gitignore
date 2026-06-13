@@ -6,7 +6,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
-data/
+/data/
 datasets/
 checkpoints/
 outputs/

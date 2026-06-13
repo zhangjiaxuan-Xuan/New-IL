@@ -1,4 +1,8 @@
 seed: 7
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
 data:
   source: openvla_modified_libero_rlds
   root: data/openvla_modified_libero_rlds
@@ -8,11 +12,30 @@ data:
     object: libero_object_no_noops
     goal: libero_goal_no_noops
     long: libero_10_no_noops
+  suite: object                   # --suite  active suite for this run
+  hdf5_root: data/libero_rlds_hdf5/object
+  artifact_root: data/patcs_artifacts/object
+  max_tasks: ~                    # --max-tasks  null = use all tasks
+  action_horizon: 8               # --action-horizon
+  obs_full_state: false           # --obs-full-state  true = ee_states[8], false = ee_pos[3]
+  val_fraction: 0.1               # --val-fraction
+  num_workers: 0                  # --num-workers  0 = in-process (data fits in RAM)
+
+# ---------------------------------------------------------------------------
+# Model  (ActionMLPPolicy; SmolVLA target for future integration)
+# ---------------------------------------------------------------------------
 model:
   target: action_expert_full_finetune
   policy_backbone: small_act_style_first
-  public_vla_reference: lerobot/smolvla_base
+  public_vla_reference: lerobot/smolvla_libero
   action_horizon: 8
+  hidden_dim: 256                 # --hidden-dim
+  num_layers: 3                   # --num-layers
+  dropout: 0.1                    # --dropout
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
 training:
   strategy: full_action_expert
   freeze:
@@ -26,15 +49,93 @@ training:
     - optional_small_adapters
   baseline_loss: fixed_time_bc
   candidate_loss: pa_tcs
+
+  # --- steps & batch ---
+  max_steps: 100000               # --max-steps
+  # Batch auto-sizing: run_guard estimates per_device_batch from free GPU memory.
+  # target_global_batch drives grad-accum when the GPU batch is smaller than target.
   batch_size: auto
   grad_accumulation_steps: auto
-  max_steps: 80000
-  lr: 0.0005
+  target_global_batch: 16         # --target-global-batch  effective batch = per_device × n_gpu × accum
+  gb_per_sample: 2.5              # --gb-per-sample  GPU memory estimate per sample; raise if OOM
+  reserve_gb: 2.0                 # --reserve-gb  headroom always left free on each GPU
+  batch_multiple: 4               # --batch-multiple  per_device_batch must be a multiple of this
+  min_per_device_batch: 4         # --min-per-device-batch  auto lower clamp
+  max_per_device_batch: 4         # --max-per-device-batch  auto upper clamp
+
+  # --- optimiser ---
+  lr: 0.0005                      # --lr
+  weight_decay: 0.0001            # --weight-decay
+  grad_clip: 1.0                  # --grad-clip
+
+  # --- LR schedule: linear warmup → cosine decay ---
+  lr_warmup_steps: 4000           # --lr-warmup-steps  steps to ramp 0 → lr
+  min_lr: 1.0e-7                  # --min-lr  cosine decay floor
+
+  # --- loss weights ---
+  bc_weight: 1.0                  # --bc-weight
+  patcs_weight: 0.1               # --patcs-weight  0.0 = pure BC baseline
+  event_weight: 10.0              # --event-weight  anchor-transition node penalty
+
+  # --- Progress curriculum (prevents 'open-gripper-in-place' local optimum) ---
+  patcs_warmup_steps: 5000        # --patcs-warmup-steps  ramp PATCS 0 → patcs_weight
+  progress_supervision_weight: 0.5      # --progress-supervision-weight  initial forward-progress penalty
+  progress_supervision_decay_steps: 10000  # --progress-supervision-decay-steps
+  progress_min_displacement: 0.02       # --progress-min-displacement  metres per chunk
+
+  # --- PATCS tube config ---
+  tube_sigma: 0.05                # --tube-sigma
+  tube_temperature: 0.25          # --tube-temperature
+  tube_v_max: 0.2                 # --tube-v-max  max phase advance per step
+  tube_delta: 0.08                # --tube-delta  phase window half-width
+
+# ---------------------------------------------------------------------------
+# Checkpointing & logging
+# ---------------------------------------------------------------------------
+logging:
+  checkpoint_dir: runs/checkpoints/default   # --checkpoint-dir
+  checkpoint_every: 5000          # --checkpoint-every
+  keep_last_checkpoints: 5        # --keep-last-checkpoints
+  log_every: 100                  # --log-every
+
+# ---------------------------------------------------------------------------
+# LIBERO rollout evaluation (triggered at each checkpoint when enabled)
+# ---------------------------------------------------------------------------
+eval:
+  eval_on_checkpoint: false       # --eval-on-checkpoint
+  eval_benchmark: ~               # --eval-benchmark  null → libero_<suite>
+  eval_task_id: "0"               # --eval-task-id  "all" = every task
+  eval_trials: 1                  # --eval-trials
+  eval_max_steps: 400             # --eval-max-steps
+  eval_settle_steps: 5            # --eval-settle-steps
+  eval_camera_size: 128           # --eval-camera-size
+  eval_camera_name: agentview_image  # --eval-camera-name
+  eval_fps: 20                    # --eval-fps
+  eval_save_video: false          # --eval-save-video
+  eval_cpu: false                 # --eval-cpu
+  eval_server_url: ~              # --eval-server-url  null = subprocess; set to http://host:8765
+  eval_timeout_sec: 3600.0        # --eval-timeout-sec
+  eval_async: false               # --eval-async  always true under DDP
+  libero_root: ~                  # --libero-root  null = env LIBERO_ROOT
+
+# ---------------------------------------------------------------------------
+# SwanLab live logging
+# ---------------------------------------------------------------------------
+swanlab:
+  enabled: false                  # --swanlab
+  project: new-il                 # --swanlab-project
+  run_name: ~                     # --swanlab-run-name  null = auto
+  mode: cloud                     # --swanlab-mode  cloud | local | offline | disabled
+  logdir: ~                       # --swanlab-logdir  null = <checkpoint_dir>/swanlab
+
+# ---------------------------------------------------------------------------
+# Runtime / GPU selection (new-il-run / run_guard)
+# ---------------------------------------------------------------------------
 runtime:
-  runs_dir: runs/new_il
-  min_free_gb: 20
-  max_gpus: 1
-  memory_fraction: 0.9
+  runs_dir: runs/new_il           # --runs-dir
+  min_free_gb: 20                 # --min-free-gb  GPU must have this much free VRAM
+  max_gpus: 2                     # --max-gpus
+  memory_fraction: 0.9            # --memory-fraction
   log_terminal: true
   write_run_config: true
   save_checkpoints: true

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -56,6 +57,51 @@ from new_il.patcs import TubeLossConfig
 from new_il.training.dataset import LiberoChunkDataset
 from new_il.training.model import ActionMLPPolicy
 from new_il.training.patcs_loss import PatcsArtifact
+
+
+# ---------------------------------------------------------------------------
+# Progress curriculum: schedules for PATCS weight warmup and forced-progress decay
+# ---------------------------------------------------------------------------
+
+def _patcs_effective_weight(step: int, final_weight: float, warmup_steps: int) -> float:
+    """Ramp PATCS weight linearly from 0 → final_weight over warmup_steps.
+
+    During the warmup phase the model relies on BC loss to learn basic motion;
+    once predictions are stable, PATCS provides full trajectory-cloud supervision.
+    """
+    if warmup_steps <= 0 or final_weight <= 0.0:
+        return final_weight
+    return final_weight * min(1.0, step / max(warmup_steps, 1))
+
+
+def _progress_supervision_weight(step: int, initial_weight: float, decay_steps: int) -> float:
+    """Decay direct-progress weight linearly from initial_weight → 0 over decay_steps.
+
+    High early to prevent the 'stay-in-place + open-gripper' local optimum;
+    decays to zero once the model has learned to advance through the task.
+    """
+    if decay_steps <= 0 or initial_weight <= 0.0:
+        return 0.0
+    return initial_weight * max(0.0, 1.0 - step / max(decay_steps, 1))
+
+
+def _progress_forward_loss(
+    pred_chunks: torch.Tensor,  # [B, H, 7]
+    ee_pos_t: torch.Tensor,     # [B, 3]
+    min_displacement: float,
+) -> torch.Tensor:
+    """Penalize predicted trajectories whose net end-effector displacement is too small.
+
+    Integrates the predicted delta-xyz to get the predicted ee_pos trajectory,
+    then measures ||pred_ee[-1] - ee_pos_t||.  Any sample whose total displacement
+    is below min_displacement contributes a relu penalty, directly counteracting
+    the 'gripper-open-in-place' local optimum that occurs during early training
+    when DTW-based PATCS is unreliable.
+    """
+    pred_ee_last = ee_pos_t + torch.cumsum(pred_chunks[:, :, :3], dim=1)[:, -1, :]  # [B, 3]
+    total_displacement = (pred_ee_last - ee_pos_t).norm(dim=-1)                      # [B]
+    penalty = torch.relu(pred_chunks.new_tensor(min_displacement) - total_displacement)
+    return penalty.mean()
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +200,9 @@ def _patcs_loss_batch(
         P = len(phase_grid_np)
 
         for k in range(H):
-            # Target phase for this step — nearest single phase, no window scan
-            rho_k = float(np.clip(rho + k * config.dt * config.v_max, 0.0, 1.0))
+            # pred_ee[k] is the position AFTER executing action k (i.e. at time t+k+1),
+            # so the expected phase is rho_start + (k+1)*dt*v_max, not rho + k*dt*v_max.
+            rho_k = float(np.clip(rho + (k + 1) * config.dt * config.v_max, 0.0, 1.0))
             p_idx = int(np.round(rho_k * (P - 1)))
 
             point = pred_ee[i, k]   # [3], on GPU, has grad
@@ -190,6 +237,25 @@ def _patcs_loss_batch(
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
+
+def _cosine_warmup_lr_lambda(
+    step: int,
+    warmup_steps: int,
+    total_steps: int,
+    min_lr_ratio: float,
+) -> float:
+    """LR multiplier: linear warmup then cosine decay.
+
+    Returns a value in [min_lr_ratio, 1.0] to be multiplied by the base lr.
+      step < warmup_steps  → linearly ramp 0 → 1
+      step >= warmup_steps → cosine decay 1 → min_lr_ratio
+    """
+    if step < warmup_steps:
+        return step / max(warmup_steps, 1)
+    progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+    return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
 
 def _env_int(key: str, fallback: int) -> int:
     val = os.environ.get(key)
@@ -413,15 +479,12 @@ def train(args: argparse.Namespace) -> None:
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         total_steps = args.max_steps
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        min_lr_ratio = args.min_lr / max(args.lr, 1e-12)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,
-            mode="min",
-            factor=args.lr_decay_factor,
-            patience=args.lr_plateau_patience,
-            threshold=args.lr_plateau_threshold,
-            threshold_mode="rel",
-            cooldown=args.lr_plateau_cooldown,
-            min_lr=args.min_lr,
+            lr_lambda=lambda step: _cosine_warmup_lr_lambda(
+                step, args.lr_warmup_steps, total_steps, min_lr_ratio
+            ),
         )
 
         # --- PATCS config ---
@@ -464,14 +527,17 @@ def train(args: argparse.Namespace) -> None:
                 "bc_weight": args.bc_weight,
                 "patcs_weight": args.patcs_weight,
                 "event_weight": args.event_weight,
+                "patcs_warmup_steps": args.patcs_warmup_steps,
+                "progress_supervision_weight": args.progress_supervision_weight,
+                "progress_supervision_decay_steps": args.progress_supervision_decay_steps,
+                "progress_min_displacement": args.progress_min_displacement,
                 "action_horizon": args.action_horizon,
                 "obs_full_state": args.obs_full_state,
                 "hidden_dim": args.hidden_dim,
                 "num_layers": args.num_layers,
                 "dropout": args.dropout,
-                "lr_decay_factor": args.lr_decay_factor,
-                "lr_plateau_patience": args.lr_plateau_patience,
-                "lr_plateau_threshold": args.lr_plateau_threshold,
+                "lr_warmup_steps": args.lr_warmup_steps,
+                "min_lr": args.min_lr,
                 "eval_on_checkpoint": args.eval_on_checkpoint,
                 "eval_server_url": args.eval_server_url,
                 "eval_benchmark": args.eval_benchmark or _libero_benchmark_name(args.suite),
@@ -488,9 +554,17 @@ def train(args: argparse.Namespace) -> None:
         log_metrics: dict[str, list[torch.Tensor]] = {
             "loss": [], "bc_loss": [], "patcs_loss": [],
             "patcs_tube": [], "patcs_event": [],
+            "progress_loss": [],
         }
 
-        _print_rank0(rank, f"Starting training: max_steps={total_steps}  patcs_weight={args.patcs_weight}", flush=True)
+        _print_rank0(
+            rank,
+            f"Starting training: max_steps={total_steps}  patcs_weight={args.patcs_weight}  "
+            f"patcs_warmup_steps={args.patcs_warmup_steps}  "
+            f"progress_supervision_weight={args.progress_supervision_weight}  "
+            f"progress_supervision_decay_steps={args.progress_supervision_decay_steps}",
+            flush=True,
+        )
         t0 = time.time()
 
         epoch = 0
@@ -516,10 +590,19 @@ def train(args: argparse.Namespace) -> None:
             # BC loss
             bc = mse_loss_fn(pred, action_gt)
 
-            # PATCS loss provides a differentiable regularization signal.
+            # Curriculum schedules — computed per optimizer step so micro-batches
+            # within an accumulation window share the same effective weights.
+            patcs_w_eff = _patcs_effective_weight(step, args.patcs_weight, args.patcs_warmup_steps)
+            prog_w_eff = _progress_supervision_weight(
+                step, args.progress_supervision_weight, args.progress_supervision_decay_steps
+            )
+
+            # PATCS loss with warmup-ramped weight — negligible early so noisy
+            # DTW-based phase supervision does not mislead the model before it
+            # has learned basic motion.
             patcs_metrics: dict[str, torch.Tensor] = {}
             patcs_scalar = torch.tensor(0.0, device=device)
-            if args.patcs_weight > 0.0:
+            if patcs_w_eff > 0.0:
                 patcs_scalar, patcs_metrics = _patcs_loss_batch(
                     pred,
                     ee_pos_t,
@@ -534,7 +617,14 @@ def train(args: argparse.Namespace) -> None:
                     device=device,
                 )
 
-            loss = args.bc_weight * bc + args.patcs_weight * patcs_scalar
+            # Direct progress-forward loss — high early to prevent the
+            # 'open-gripper-in-place' local optimum; decays once the model
+            # has learned to advance through the trajectory.
+            prog_loss = torch.tensor(0.0, device=device)
+            if prog_w_eff > 0.0:
+                prog_loss = _progress_forward_loss(pred, ee_pos_t, args.progress_min_displacement)
+
+            loss = args.bc_weight * bc + patcs_w_eff * patcs_scalar + prog_w_eff * prog_loss
             (loss / grad_accum).backward()
             accum_count += 1
 
@@ -545,10 +635,12 @@ def train(args: argparse.Namespace) -> None:
             log_metrics["patcs_loss"].append(patcs_scalar.detach())
             log_metrics["patcs_tube"].append(patcs_metrics.get("patcs_tube", zero_metric))
             log_metrics["patcs_event"].append(patcs_metrics.get("patcs_event", zero_metric))
+            log_metrics["progress_loss"].append(prog_loss.detach())
 
             if accum_count >= grad_accum:
                 nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 optimizer.step()
+                scheduler.step()   # cosine schedule advances every optimizer step
                 optimizer.zero_grad()
                 accum_count = 0
                 step += 1
@@ -556,17 +648,21 @@ def train(args: argparse.Namespace) -> None:
                 if step % args.log_every == 0:
                     elapsed = time.time() - t0
                     mean = _metric_means(log_metrics, distributed, world_size, device)
-                    if rank == 0:
-                        scheduler.step(mean["loss"])
-                    _sync_optimizer_lr(optimizer, distributed, rank, device)
-                    _barrier(distributed, device)
-                    lr_now = scheduler.get_last_lr()[0]
+                    lr_now = optimizer.param_groups[0]["lr"]
+                    # Curriculum weights at current step (for logging only)
+                    log_patcs_w = _patcs_effective_weight(step, args.patcs_weight, args.patcs_warmup_steps)
+                    log_prog_w = _progress_supervision_weight(
+                        step, args.progress_supervision_weight, args.progress_supervision_decay_steps
+                    )
                     record = {
                         "train/loss": mean["loss"],
                         "train/bc_loss": mean["bc_loss"],
                         "train/patcs_loss": mean["patcs_loss"],
                         "train/patcs_tube": mean["patcs_tube"],
                         "train/patcs_event": mean["patcs_event"],
+                        "train/progress_loss": mean["progress_loss"],
+                        "train/patcs_weight_effective": log_patcs_w,
+                        "train/progress_supervision_weight_effective": log_prog_w,
                         "train/lr": lr_now,
                         "train/elapsed_sec_per_log": elapsed,
                         "train/per_device_batch": per_device_batch,
@@ -588,8 +684,9 @@ def train(args: argparse.Namespace) -> None:
                         rank,
                         f"step={step:>6d}/{total_steps}  "
                         f"loss={mean['loss']:.4f}  bc={mean['bc_loss']:.4f}  "
-                        f"patcs={mean['patcs_loss']:.4f}  "
+                        f"patcs={mean['patcs_loss']:.4f}(w={log_patcs_w:.3f})  "
                         f"(tube={mean['patcs_tube']:.3f} event={mean['patcs_event']:.3f})  "
+                        f"prog={mean['progress_loss']:.4f}(w={log_prog_w:.3f})  "
                         f"lr={lr_now:.2e}  {elapsed:.0f}s",
                         flush=True,
                     )
@@ -952,14 +1049,33 @@ def main() -> None:
     parser.add_argument("--patcs-weight", type=float, default=0.1,
                         help="Set to 0.0 for pure BC baseline.")
     parser.add_argument("--event-weight", type=float, default=10.0)
-    parser.add_argument("--lr-decay-factor", type=float, default=0.1,
-                        help="Reduce LR by this factor on a stable loss plateau.")
-    parser.add_argument("--lr-plateau-patience", type=int, default=5,
-                        help="Number of logged points without improvement before LR decay.")
-    parser.add_argument("--lr-plateau-threshold", type=float, default=1e-3,
-                        help="Relative improvement threshold for plateau detection.")
-    parser.add_argument("--lr-plateau-cooldown", type=int, default=1)
-    parser.add_argument("--min-lr", type=float, default=1e-7)
+    # Progress curriculum — addresses 'stay-in-place / open-gripper' local optimum
+    parser.add_argument(
+        "--patcs-warmup-steps", type=int, default=5000,
+        help="Ramp PATCS weight from 0 → patcs-weight over this many optimizer steps. "
+             "Keeps noisy early-training DTW supervision from dominating BC. 0 = no warmup.",
+    )
+    parser.add_argument(
+        "--progress-supervision-weight", type=float, default=0.5,
+        help="Initial weight of the direct progress-forward loss (penalizes zero displacement). "
+             "Decays to 0 over progress-supervision-decay-steps. 0 = disabled.",
+    )
+    parser.add_argument(
+        "--progress-supervision-decay-steps", type=int, default=8000,
+        help="Steps over which the progress-forward loss decays from its initial weight to 0.",
+    )
+    parser.add_argument(
+        "--progress-min-displacement", type=float, default=0.02,
+        help="Minimum expected net end-effector displacement (metres) per action chunk. "
+             "Chunks with smaller displacement incur a progress-forward penalty.",
+    )
+    parser.add_argument(
+        "--lr-warmup-steps", type=int, default=1000,
+        help="Steps for linear LR warmup (0 → lr). Cosine decay runs from warmup end to max-steps. "
+             "Coordinate with --patcs-warmup-steps so LR is at full strength before PATCS activates.",
+    )
+    parser.add_argument("--min-lr", type=float, default=1e-7,
+                        help="Cosine decay floor. Final LR approaches this value at max-steps.")
 
     # PATCS tube config
     parser.add_argument("--tube-sigma", type=float, default=0.05)

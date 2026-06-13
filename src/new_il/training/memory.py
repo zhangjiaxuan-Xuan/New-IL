@@ -85,6 +85,8 @@ def plan_memory(
     batch_multiple: int = 4,
     per_device_batch_size: int | None = None,
     allow_oom_risk: bool = False,
+    min_per_device_batch: int | None = None,
+    max_per_device_batch: int | None = None,
 ) -> MemoryPlan:
     eligible = [gpu for gpu in gpus if gpu.free_mb >= min_free_gb * 1024]
     eligible.sort(key=lambda gpu: gpu.free_mb, reverse=True)
@@ -134,10 +136,19 @@ def plan_memory(
         )
     else:
         per_device = max_safe
+        # Apply explicit upper/lower clamps in auto mode.
+        if max_per_device_batch is not None and per_device > max_per_device_batch:
+            per_device = _round_down_multiple(max_per_device_batch, batch_multiple)
+        if min_per_device_batch is not None and per_device < min_per_device_batch:
+            per_device = min_per_device_batch
+        if per_device < 1:
+            per_device = 1
         oom_risk = False
         reason = (
             f"auto per-device batch {per_device}, rounded to multiple of {batch_multiple}, "
             f"from weakest selected GPU free memory: {weakest_free_gb:.1f} GiB"
+            + (f"; capped at max_per_device_batch={max_per_device_batch}" if max_per_device_batch and per_device == _round_down_multiple(max_per_device_batch, batch_multiple) else "")
+            + (f"; floored at min_per_device_batch={min_per_device_batch}" if min_per_device_batch and per_device == min_per_device_batch else "")
         )
     physical_batch = per_device * len(selected)
     accumulation = max(1, math.ceil(target_global_batch / physical_batch))
@@ -166,6 +177,10 @@ def main() -> None:
     parser.add_argument("--batch-multiple", type=int, default=4)
     parser.add_argument("--per-device-batch-size", type=int)
     parser.add_argument("--allow-oom-risk", action="store_true")
+    parser.add_argument("--min-per-device-batch", type=int, default=None,
+                        help="Auto-mode lower clamp for per-device batch size.")
+    parser.add_argument("--max-per-device-batch", type=int, default=None,
+                        help="Auto-mode upper clamp for per-device batch size.")
     args = parser.parse_args()
     plan = plan_memory(
         query_gpus(),
@@ -178,5 +193,7 @@ def main() -> None:
         batch_multiple=args.batch_multiple,
         per_device_batch_size=args.per_device_batch_size,
         allow_oom_risk=args.allow_oom_risk,
+        min_per_device_batch=args.min_per_device_batch,
+        max_per_device_batch=args.max_per_device_batch,
     )
     print(json.dumps(asdict(plan), indent=2))
