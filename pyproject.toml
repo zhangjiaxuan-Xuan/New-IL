@@ -36,6 +36,9 @@ dev = [
   "pytest>=8.2",
   "ruff>=0.6",
 ]
+smolvla = [
+    "lerobot[libero,smolvla]>=0.4.0",
+]
 
 [project.scripts]
 new-il-build-patcs-artifacts = "new_il.data.patcs_artifacts:main"
