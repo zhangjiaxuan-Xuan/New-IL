@@ -7,7 +7,7 @@ requires-python = ">=3.10,<3.12"
 license = { text = "MIT" }
 dependencies = [
   "h5py>=3.11",
-  "numpy>=1.26",
+  "numpy>=1.26,<2",
   "pyyaml>=6.0",
   "rich>=13.7",
   "scipy>=1.10",
@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 data = [
   "huggingface-hub>=0.25",
+  "pandas>=2.2",
+  "pyarrow>=15",
 ]
 rlds = [
   "tensorflow-cpu>=2.13",
@@ -28,6 +30,21 @@ viz = [
 eval = [
   "imageio[ffmpeg]>=2.34",
 ]
+libero = [
+  "bddl==1.0.1",
+  "easydict>=1.9",
+  "future>=0.18.2",
+  "gym==0.25.2",
+  "libero==0.1.0",
+  "mujoco>=2.3.0",
+  "opencv-python-headless>=4.10,<4.11",
+  "robosuite==1.4.0",
+]
+openpi-client = [
+  "msgpack>=1.0",
+  "pillow>=10",
+  "websockets>=12",
+]
 train = [
   "swanlab>=0.7",
   "torch>=2.2",
@@ -37,21 +54,29 @@ dev = [
   "ruff>=0.6",
 ]
 smolvla = [
-    "lerobot[libero,smolvla]>=0.4.0",
+    "lerobot[libero,smolvla]==0.4.0",
 ]
 
 [project.scripts]
 new-il-build-patcs-artifacts = "new_il.data.patcs_artifacts:main"
 new-il-download-libero = "new_il.libero.download:main"
 new-il-download-openvla-rlds = "new_il.data.openvla_rlds:main"
+new-il-lerobot-to-hdf5 = "new_il.data.lerobot_to_hdf5:main"
+new-il-rollout-manifest = "new_il.data.rollout_manifest:main"
 new-il-eval-libero-checkpoint = "new_il.libero.evaluate_checkpoint:main"
+new-il-eval-openpi-libero-server = "new_il.libero.evaluate_openpi_server:main"
 new-il-libero-eval-server = "new_il.libero.eval_server:main"
+new-il-libero-openpi-make-queue = "new_il.libero.openpi_queue:make_queue_main"
+new-il-libero-openpi-rollout = "new_il.libero.rollout:openpi_rollout_main"
+new-il-libero-openpi-worker = "new_il.libero.openpi_queue:worker_main"
 new-il-plan-memory = "new_il.training.memory:main"
 new-il-prepare-libero-subset = "new_il.libero.prepare_subset:main"
 new-il-rlds-to-hdf5 = "new_il.data.rlds_to_hdf5:main"
 new-il-run = "new_il.training.run_guard:main"
 new-il-train = "new_il.training.train_ae:main"
+new-il-third-party-status = "new_il.integrations.third_party:main"
 new-il-visualize-cloud = "new_il.visualization.cloud3d:main"
+new-il-visualize-prob-tube-synthetic = "new_il.visualization.prob_tube_synthetic:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -66,3 +91,7 @@ target-version = "py310"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv.sources]
+libero = { path = "third_party/LIBERO", editable = true }
+robosuite = { path = "third_party/robosuite", editable = true }

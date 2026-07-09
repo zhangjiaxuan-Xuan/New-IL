@@ -42,6 +42,8 @@ time step and every action dimension in the same way.
 
 - English: `docs/en/readme.md`
 - Chinese: `docs/zh-CN/readme.md`
+- OpenPI LIBERO success rollout data:
+  `runs/openpi_libero_no90_0_1_2_3gpu_1s6w/DATA_README.md`
 
 ## Chinese README
 

@@ -1,0 +1,95 @@
+6.14 发现实际上uv.lock并不是最新版的，需要进入原始环境更新一下之后发布
+
+改进需求：
+这个项目需要使用smolvla作为基础模型机性测试,因此对应训练和验证还有其他的部分都需要改成以这个模型为起点并且之后可以改成其他模型
+另外实际上现在的PATCS算法实现有些问题，因为这个算法的逻辑原本上是将单个任务中单个监督轨迹进行融合，生成一个带有软硬限制的概率云和进度条，让模型在监督训练中允许自己探索生成的速度和生成的action位置，而不是必须拟合单次训练的独立action chunck
+但是实际上如果要在原本IL的逻辑上实现会有不对齐的地方，因为如果允许使用自主探索进度，那么对应的第一个chunck的结束点作为第二个chunck的起点是需要一个新的动态切分数据逻辑实现，且这个进度也需要一个阶梯型的loss来防止模型学到不做动作的退化解
+因此当前训练一个traj的逻辑就是这样：从开头开始训练，根据每次模型输出的进度和进度限制范围动态切分进度，知道监督片段覆盖到结束点，进入下一个traj训练。多卡训练就可以沿用IL的多卡训练数据混合的逻辑，在每个卡的batch视为一个workers，对应的一个worker执行一个traj监督，每一次chunck计算结束回传损失。允许traj异步分发训练任务，workers最大使用
+因此需要将原本的IL训练器的数据loader改成训练期间动态，根据训练情况以及对于workers状态动态发布训练任务。
+
+response：• 我看了 progress.txt，你的判断基本对：现在的实现还不是你想要的 PATCS，而是“固定 IL chunk + 额外 PATCS 正则”。
+
+  关键差异在这里：
+
+  当前逻辑：
+
+  - DataLoader 预先切好 (obs_t, action[t:t+H])
+  - rho_start 也预先按 demo 时间算好
+  - 训练时只在固定 rho_start 附近查 cloud
+  - 下一个 chunk 和上一个 chunk 的预测结果无关
+  - 本质仍是固定时间 BC，只是加了 cloud loss
+
+  你想要的逻辑：
+
+  - 一个 worker 接管一条 trajectory
+  - 当前 chunk 由模型预测
+  - 根据预测 chunk 的终点/路径，动态估计当前进度推进到哪里
+  - 再根据这个新进度切下一个监督片段
+  - 直到覆盖到任务终点，再换下一条 traj
+  - 进度 loss 要防止模型选择“不推进”这个退化解
+
+  这个方向是合理的，但需要注意一个核心问题：离线训练没有真实环境状态转移。如果模型预测了一个新的末端位置，我们没有对应的新图像
+  observation。所以动态推进时通常只能做两种近似：
+
+  1. 动态进度，demo observation 对齐
+     用预测轨迹匹配到参考 demo 的新进度，然后取该进度附近的 demo observation 作为下一步输入。这是可实现的，接近你说的动态切分。
+
+  2. 纯 trajectory-level loss
+     不真的滚动 observation，只在一个较长窗口里让模型输出多个 chunks，然后用 monotonic alignment / DP 对齐 cloud。这更稳定，但对 SmolVLA
+     训练接口改动更大。
+
+  我建议分三层做，不要一次把所有东西重写：
+
+  第一层：SmolVLA 基线
+  先把训练器从 ActionMLPPolicy 抽象成 policy interface：
+
+  - Policy.forward(batch) -> action_chunk
+  - Policy.save/load
+  - ActionMLPPolicy 只是 fallback
+  - 新增 SmolVLAPolicyAdapter
+
+  然后直接用 LeRobot LIBERO 数据训练/验证 SmolVLA。这个阶段先不启用复杂 PATCS，只跑 BC，确认机械臂至少能动、视频尺寸正常、eval
+  observation 和训练输入一致。
+
+  第二层：修正 PATCS 静态版
+  在现有固定 chunk 训练里先修几个明显问题：
+
+  - event_radius=1e-4 太小，要调到 0.01 ~ 0.03 量级。
+  - event loss 不能压过 BC，建议单独 normalize 或 clip。
+  - 加 action norm / displacement 统计，确认预测不是塌到 0。
+  - video 保存显式固定 frame shape，避免 imageio/ffmpeg resize。
+
+  这层可以快速验证“原地不动”是否主要来自 loss 尺度。
+
+  第三层：动态 trajectory worker
+  再实现你说的真正 PATCS：
+
+  - TrajectoryWorkerState: 当前 task、demo、stage、rho、obs_index、done
+  - 每个 batch item 是一个 worker 当前状态
+  - 模型输出 chunk
+  - 积分得到 predicted ee path
+  - 用 cloud / anchor / DTW 或 monotonic matcher 得到 rho_next
+  - loss 包括：
+      - tube loss
+      - event loss
+      - monotonic progress loss
+      - stall penalty
+      - backward penalty
+      - optional BC anchor loss
+
+  - worker 用 rho_next 找到下一个 demo observation index，继续训练
+
+  这里不建议叫普通 Dataset，更像 IterableDataset 或训练循环内部的 TrajectorySupervisor，因为样本由模型输出动态决定。
+
+  我的建议优先级：
+
+  1. 先接 SmolVLA policy adapter 和 LeRobot 原生数据。
+  2. 跑 BC-only，确认 rollout 能动。
+  3. 修 video 保存。
+  4. 重建 PATCS artifact，放大 event_radius。
+  5. 做静态 PATCS ablation。
+  6. 最后上动态 trajectory worker。
+
+  这样每一步都有可验证结果，不会把“模型接入问题、视频问题、loss 问题、动态进度问题”混在一起。
+
+  已经下载完成,你先验证一下数据收集器的可行性,之后给我完整8卡256wokers启动命令.

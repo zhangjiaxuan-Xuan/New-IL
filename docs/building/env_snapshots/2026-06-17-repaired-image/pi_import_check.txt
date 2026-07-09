@@ -1,0 +1,3 @@
+pi ok
+jax 0.5.3
+devices [CudaDevice(id=0)]

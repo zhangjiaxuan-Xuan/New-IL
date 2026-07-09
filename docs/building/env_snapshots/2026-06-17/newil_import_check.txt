@@ -1,0 +1,5 @@
+python 3.10.20 (main, Jun 11 2026, 15:17:37) [GCC 14.3.0]
+numpy 1.26.4
+cv2 4.10.0
+mujoco 3.9.0
+robosuite/libero import ok via prepare_libero_paths

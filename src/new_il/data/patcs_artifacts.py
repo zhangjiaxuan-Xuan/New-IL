@@ -86,10 +86,17 @@ def _target_stage_count(records: list[dict[str, Any]], strategy: str) -> int:
 
 
 def _collect_stage_points(
-    hdf5_path: Path,
+    source_path: Path,
     config: PatcsArtifactConfig,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any], dict[str, np.ndarray]]:
-    records = _scan_demos(hdf5_path, config)
+    return _collect_stage_points_from_records(_scan_demos(source_path, config), source_path, config)
+
+
+def _collect_stage_points_from_records(
+    records: list[dict[str, Any]],
+    source_path: Path,
+    config: PatcsArtifactConfig,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any], dict[str, np.ndarray]]:
     expected_stages = _target_stage_count(records, config.stage_strategy)
     used: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
@@ -188,7 +195,7 @@ def _collect_stage_points(
         "demo_ids": np.asarray([item["demo"] for item in used], dtype="S64"),
     }
     metadata = {
-        "source": str(hdf5_path),
+        "source": str(source_path),
         "stage_strategy": config.stage_strategy,
         "target_stage_count": expected_stages,
         "used_demos": used,
@@ -199,6 +206,56 @@ def _collect_stage_points(
         "state_dim": int(phase_points.shape[3]),
     }
     return phase_points.astype(np.float32, copy=False), gripper_states, metadata, arrays
+
+
+def _read_rollout_npz(path: Path, config: PatcsArtifactConfig, successful_only: bool) -> dict[str, Any] | None:
+    data = np.load(path, allow_pickle=False)
+    success = bool(data["success"]) if "success" in data else True
+    if successful_only and not success:
+        return None
+    if "actions" not in data:
+        raise KeyError(f"{path}: missing actions")
+    if "observation.state" not in data:
+        raise KeyError(f"{path}: missing observation.state")
+    actions = np.asarray(data["actions"], dtype=np.float32)
+    state = np.asarray(data["observation.state"], dtype=np.float32)
+    if state.shape[0] != actions.shape[0]:
+        raise ValueError(f"{path}: state/actions length mismatch: {state.shape[0]} vs {actions.shape[0]}")
+    if config.obs_key in {"ee_pos", "robot0_eef_pos"}:
+        states = state[:, :3]
+    elif config.obs_key in {"ee_states", "observation.state", "state"}:
+        states = state
+    else:
+        raise ValueError(f"Unsupported rollout obs_key={config.obs_key!r}; use ee_pos or ee_states")
+    transitions = gripper_transition_indices(
+        actions,
+        gripper_index=config.gripper_index,
+        threshold=config.gripper_threshold,
+    )
+    return {
+        "name": path.stem,
+        "states": states,
+        "actions": actions,
+        "transitions": transitions,
+        "bounds": segment_boundaries(len(actions), transitions),
+    }
+
+
+def _scan_rollout_npzs(
+    rollout_dir: Path,
+    config: PatcsArtifactConfig,
+    *,
+    successful_only: bool = True,
+) -> list[dict[str, Any]]:
+    paths = sorted(Path(rollout_dir).glob("**/*.npz"))
+    records: list[dict[str, Any]] = []
+    for path in paths:
+        record = _read_rollout_npz(path, config, successful_only)
+        if record is not None:
+            records.append(record)
+    if not records:
+        raise RuntimeError(f"No rollout NPZ records found under {rollout_dir}")
+    return records
 
 
 def _convex_hull_equations(points: np.ndarray) -> np.ndarray | None:
@@ -295,16 +352,86 @@ def build_patcs_artifact(
     return output
 
 
+def build_patcs_artifact_from_rollouts(
+    rollout_dir: Path,
+    output: Path,
+    config: PatcsArtifactConfig,
+    *,
+    successful_only: bool = True,
+) -> Path:
+    phase_points, gripper_states, metadata, auxiliary = _collect_stage_points_from_records(
+        _scan_rollout_npzs(rollout_dir, config, successful_only=successful_only),
+        rollout_dir,
+        config,
+    )
+    phase_grid = normalized_phase(config.num_phase)
+    event_mask = np.zeros((phase_points.shape[0], phase_points.shape[2]), dtype=bool)
+    event_mask[:, 0] = True
+    event_mask[:, -1] = True
+    anchor = phase_points[:, config.anchor_demo_index, :, :]
+    hull_equations, hull_valid = _build_padded_hulls(phase_points, event_mask)
+    hull_equation_counts = hull_valid.sum(axis=-1).astype(np.int32)
+    metadata_json = json.dumps(
+        {"config": asdict(config), "source_format": "rollout_npz", "successful_only": successful_only, **metadata},
+        sort_keys=True,
+    )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        schema_version=np.array(1, dtype=np.int32),
+        phase_points=phase_points,
+        anchor=anchor.astype(np.float32, copy=False),
+        anchor_points=anchor.astype(np.float32, copy=False),
+        phase=phase_grid,
+        phase_grid=phase_grid,
+        event_mask=event_mask,
+        gripper_states=gripper_states,
+        hull_equations=hull_equations,
+        hull_valid=hull_valid,
+        hull_valid_mask=hull_equation_counts > 0,
+        hull_equation_counts=hull_equation_counts,
+        margin=np.array(config.margin, dtype=np.float32),
+        hull_margin=np.array(config.margin, dtype=np.float32),
+        event_radius=np.array(config.event_radius, dtype=np.float32),
+        anchor_demo_index=np.array(config.anchor_demo_index, dtype=np.int64),
+        anchor_demo_indices=np.full((phase_points.shape[0],), config.anchor_demo_index, dtype=np.int32),
+        metadata_json=np.asarray(metadata_json),
+        **auxiliary,
+    )
+    manifest = {
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "artifact": str(output),
+        "source_format": "rollout_npz",
+        "successful_only": successful_only,
+        "config": asdict(config),
+        "arrays": {
+            "phase_points": list(phase_points.shape),
+            "anchor": list(anchor.shape),
+            "hull_equations": list(hull_equations.shape),
+            "hull_valid": list(hull_valid.shape),
+            "hull_equation_counts": list(hull_equation_counts.shape),
+            "event_mask": list(event_mask.shape),
+            **{key: list(value.shape) for key, value in auxiliary.items()},
+        },
+        **metadata,
+    }
+    output.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return output
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build offline PA-TCS supervision artifacts from LIBERO HDF5 demos.")
-    parser.add_argument("--input", type=Path, required=True, help="LIBERO task HDF5 file.")
+    parser.add_argument("--input", type=Path, required=True, help="LIBERO task HDF5 file or rollout NPZ directory.")
     parser.add_argument("--output", type=Path, required=True, help="Output .npz artifact path.")
+    parser.add_argument("--source-format", choices=["hdf5", "rollout_npz"], default="hdf5")
     parser.add_argument("--num-demos", type=int, default=16)
     parser.add_argument("--num-phase", type=int, default=64)
     parser.add_argument("--anchor-demo-index", type=int, default=0)
     parser.add_argument("--obs-key", default="ee_pos")
     parser.add_argument("--margin", type=float, default=0.012)
     parser.add_argument("--event-radius", type=float, default=1e-4)
+    parser.add_argument("--include-failed", action="store_true", help="For rollout_npz, include failed rollouts too.")
     parser.add_argument("--avoid-event-points", action="store_true")
     parser.add_argument("--stage-strategy", choices=["strict", "filter_majority"], default="filter_majority")
     args = parser.parse_args()
@@ -319,5 +446,17 @@ def main() -> None:
         avoid_event_points=args.avoid_event_points,
         stage_strategy=args.stage_strategy,
     )
-    artifact = build_patcs_artifact(args.input, args.output, config)
+    if args.source_format == "hdf5":
+        artifact = build_patcs_artifact(args.input, args.output, config)
+    else:
+        artifact = build_patcs_artifact_from_rollouts(
+            args.input,
+            args.output,
+            config,
+            successful_only=not args.include_failed,
+        )
     print(artifact)
+
+
+if __name__ == "__main__":
+    main()

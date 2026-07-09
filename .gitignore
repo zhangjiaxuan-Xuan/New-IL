@@ -13,4 +13,5 @@ outputs/
 runs/
 wandb/
 third_party/
+LIBERO
 AGENTS.md

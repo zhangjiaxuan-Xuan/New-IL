@@ -1,0 +1,41 @@
+seed: 7
+
+data:
+  source: lerobot_libero_parquet
+  dataset_root: /data/L202500340/data/huggingface/lerobot/HuggingFaceVLA/libero
+  hdf5_root: data/libero_lerobot_hdf5/smoke4
+  artifact_root: data/patcs_artifacts/smoke4
+  max_tasks: 4
+  max_demos_per_task: 4
+  action_horizon: 8
+  obs_full_state: true
+  val_fraction: 0.1
+  num_workers: 0
+
+model:
+  policy_backbone: action_mlp_smoke
+  hidden_dim: 64
+  num_layers: 2
+  dropout: 0.0
+
+training:
+  max_steps: 5
+  per_device_batch_size: 32
+  grad_accumulation_steps: 1
+  lr: 0.0005
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  bc_weight: 1.0
+  patcs_weight: 0.02
+  event_weight: 0.05
+  patcs_warmup_steps: 2
+  progress_supervision_weight: 0.5
+  progress_supervision_decay_steps: 10
+  progress_min_displacement: 0.02
+  event_radius_note: "Smoke artifacts were built with the default 1e-4 radius; increase artifact event_radius for full runs."
+
+logging:
+  checkpoint_dir: runs/checkpoints/smoke4_gpu
+  checkpoint_every: 5
+  keep_last_checkpoints: 2
+  log_every: 1

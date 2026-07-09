@@ -1,0 +1,26 @@
+libdrm-amdgpu1	2.4.113-2~ubuntu0.22.04.1	install ok installed
+libdrm-common	2.4.113-2~ubuntu0.22.04.1	install ok installed
+libdrm-intel1	2.4.113-2~ubuntu0.22.04.1	install ok installed
+libdrm-nouveau2	2.4.113-2~ubuntu0.22.04.1	install ok installed
+libdrm-radeon1	2.4.113-2~ubuntu0.22.04.1	install ok installed
+libdrm2	2.4.113-2~ubuntu0.22.04.1	install ok installed
+libegl-mesa0	23.2.1-1ubuntu3.1~22.04.4	install ok installed
+libegl-vendor		unknown ok not-installed
+libegl1	1.4.0-1	install ok installed
+libgbm1	23.2.1-1ubuntu3.1~22.04.4	install ok installed
+libgl1	1.4.0-1	install ok installed
+libgl1-amber-dri		unknown ok not-installed
+libgl1-mesa-dri	23.2.1-1ubuntu3.1~22.04.4	install ok installed
+libgladeui-2-6		unknown ok not-installed
+libglapi-mesa	23.2.1-1ubuntu3.1~22.04.4	install ok installed
+libgldispatch0-nvidia		unknown ok not-installed
+libgles2	1.4.0-1	install ok installed
+libglib-object-introspection-perl		unknown ok not-installed
+libglib2.0-0	2.72.4-0ubuntu2.9	install ok installed
+libglib2.0-data	2.72.4-0ubuntu2.9	install ok installed
+libglvnd0	1.4.0-1	install ok installed
+libglx-mesa0	23.2.1-1ubuntu3.1~22.04.4	install ok installed
+libglx-vendor		unknown ok not-installed
+libglx0	1.4.0-1	install ok installed
+libopengl-perl		unknown ok not-installed
+libopengl0	1.4.0-1	install ok installed
